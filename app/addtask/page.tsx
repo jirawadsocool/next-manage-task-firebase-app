@@ -1,12 +1,14 @@
 "use client";
+
 import Image from "next/image";
 import logo from "@/assets/logo.png";
 import Link from "next/link";
-import { useState, useEffect, use } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { firebasedb, storage } from "@/lib/firebaseConfig";
+import { v4 as uuidv4 } from "uuid";
+import { supabase } from "@/lib/supabase";
+import { firebasedb } from "@/lib/firebaseConfig"
 import { addDoc, collection } from "firebase/firestore";
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function Page() {
   const router = useRouter();
@@ -16,8 +18,6 @@ export default function Page() {
   const [isComplete, setIsComplete] = useState<boolean>(false);
   const [preview_file, setPreview_file] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
-  const [uploadError, setUploadError] = useState<string>("");
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -34,64 +34,51 @@ export default function Page() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (title.trim() === "" || detail.trim() === "") {
-      alert("กรุณาตรวจสอบการป้อนข้อมูลที่ทำ และรายละเอียดงาน");
+    if (!title.trim()) {
+      alert("กรุณากรอกชื่องาน");
       return;
     }
 
     setIsSubmitting(true);
+    let imageUrl: string | null = null;
 
-    setUploadError("");
-    setUploadProgress(0);
-    let image_url = "";
-
-    if (imageFile) {
-      if (imageFile.size > 5 * 1024 * 1024) {
-        setUploadError("ขนาดไฟล์ต้องไม่เกิน 5MB");
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (!imageFile.type.startsWith('image/')) {
-        setUploadError("กรุณาเลือกไฟล์รูปภาพเท่านั้น");
-        setIsSubmitting(false);
-        return;
-      }
-
-      const safeName = imageFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const new_image_file_name = `${Date.now()}-${safeName}`;
-
-      try {
-        setUploadProgress(50);
-        image_url = preview_file; 
-        console.log("Using preview as image URL");
-        setUploadProgress(100);
-      } catch (err: any) {
-        console.error("Upload error:", err);
-        setUploadError(err?.message || "ไม่สามารถอัปโหลดรูปได้ กรุณาลองใหม่อีกครั้ง");
-        setIsSubmitting(false);
-        return;
-      }
-    }
-
-    // จากนี้บันทึก title, detail, image_url, isComplete ลงใน Firestore
     try {
-      const result = await addDoc(collection(firebasedb, "task"), {
-        title: title,
-        detail: detail,
+      if (imageFile) {
+        const fileName = `${uuidv4()}-${imageFile.name}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("tack_bk")
+          .upload(fileName, imageFile, {
+            cacheControl: "3600",
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error("Storage upload error:", uploadError);
+          alert("เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ");
+          setIsSubmitting(false);
+          return;
+        }
+
+        const { data: publicUrlData } = supabase.storage
+          .from("tack_bk")
+          .getPublicUrl(fileName);
+
+        imageUrl = publicUrlData.publicUrl;
+      }
+
+      await addDoc(collection(firebasedb, "tasks"), {
+        title,
+        detail,
         is_complete: isComplete,
-        image_url: image_url,
+        image_url: imageUrl || "",
       });
 
-      if (result) {
-        alert("บันทึกข้อมูลสำเร็จ");
-        router.push("/alltask");
-      } else {
-        alert('พบปัญหาในการบันทึก กรุณาตรวจสอบและลองใหม่อีกครั้ง');
-      }
+      alert("บันทึกงานเรียบร้อยแล้ว");
+      router.push("/alltask");
     } catch (error) {
-      alert('พบปัญหาในการบันทึก กรุณาตรวจสอบและลองใหม่อีกครั้ง');
-      console.log(error);
+      console.error("Error saving task:", error);
+      alert("เกิดข้อผิดพลาดในการบันทึกข้อมูล");
     } finally {
       setIsSubmitting(false);
     }
@@ -155,33 +142,16 @@ export default function Page() {
                   alt="Preview"
                   className="w-40 h-40 object-cover rounded-lg border"
                 />
-                <div className="mt-2 flex flex-col gap-2">
-                  {uploadProgress > 0 && uploadProgress < 100 && (
-                    <div className="w-40 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
-                      <div 
-                        className="bg-blue-600 h-2.5 rounded-full" 
-                        style={{ width: `${uploadProgress}%` }}
-                      ></div>
-                    </div>
-                  )}
-                  
-                  {uploadError && (
-                    <p className="text-red-500 text-sm">{uploadError}</p>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImageFile(null);
-                      setPreview_file("");
-                      setUploadProgress(0);
-                      setUploadError("");
-                    }}
-                    className="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 w-32 rounded"
-                  >
-                    ลบรูป
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImageFile(null);
+                    setPreview_file("");
+                  }}
+                  className="mt-2 bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 w-32 rounded"
+                >
+                  ลบรูป
+                </button>
               </div>
             )}
           </div>
@@ -202,11 +172,10 @@ export default function Page() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className={`${
-                isSubmitting
+              className={`${isSubmitting
                   ? "bg-gray-400 cursor-not-allowed"
                   : "bg-green-500 hover:bg-green-700"
-              } text-white font-bold py-3 px-4 rounded`}
+                } text-white font-bold py-3 px-4 rounded`}
             >
               {isSubmitting ? "กำลังบันทึก..." : "บันทึกงาน"}
             </button>
